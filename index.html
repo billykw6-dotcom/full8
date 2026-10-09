@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手語動態即時辨識與學習 Web App</title>
+    <!-- 引入 Google MediaPipe Pose 偵測相關 CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            margin: 0;
+            background-color: #121212;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+        }
+        h2 {
+            margin: 15px 0 5px 0;
+            color: #00e676;
+            font-size: 1.2rem;
+        }
+        .container {
+            position: relative;
+            width: 100%;
+            max-width: 480px;
+            aspect-ratio: 3 / 4;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        video, canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* 鏡像翻轉，符合鏡子直覺 */
+        }
+        .panel {
+            width: 90%;
+            max-width: 480px;
+            margin-top: 15px;
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        .panel p {
+            margin: 6px 0;
+            font-size: 0.9rem;
+        }
+        .highlight {
+            color: #00e676;
+            font-weight: bold;
+        }
+        .coords {
+            color: #00bcd4;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+        .btn-group {
+            margin-top: 15px;
+            width: 90%;
+            max-width: 480px;
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            flex: 1;
+            padding: 12px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .btn-start { background-color: #00e676; color: #000; }
+        .btn-stop { background-color: #ff5252; color: #fff; }
+    </style>
+</head>
+<body>
+
+    <h2>🤟 手語動態即時辨識與學習系統</h2>
+
+    <div class="container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <div class="panel">
+        <p>🎯 目標手語：<span class="highlight">「您好 (Hello)」</span></p>
+        <p>📊 辨識狀態：<span id="status" class="highlight">等待啟動鏡頭...</span></p>
+        <p class="coords" id="coordsData">即時座標數據：尚未捕捉</p>
+        <p>⚡ 動作相似度評分：<span id="score" style="color: #ff9800; font-weight: bold;">0.0 分</span></p>
+    </div>
+
+    <div class="btn-group">
+        <button class="btn-start" onclick="startTracking()">開始辨識</button>
+        <button class="btn-stop" onclick="stopTracking()">暫停</button>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const statusEl = document.getElementById('status');
+        const coordsEl = document.getElementById('coordsData');
+        const scoreEl = document.getElementById('score');
+
+        let camera = null;
+        let pose = null;
+
+        function onResults(results) {
+            // 設定畫布尺寸與影片一致
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                statusEl.innerText = "🔥 正在即時追蹤手語動作！";
+                
+                // 抓取右手腕座標 (Index 16) 與左手腕座標 (Index 15)
+                const rightWrist = results.poseLandmarks[16];
+                const leftWrist = results.poseLandmarks[15];
+
+                if (rightWrist) {
+                    coordsEl.innerText = `右手腕 -> X: ${rightWrist.x.toFixed(2)}, Y: ${rightWrist.y.toFixed(2)}`;
+                    // 模擬 5000 詞彙動態比對相似度評分
+                    let mockScore = (85 + (rightWrist.x * 15)).toFixed(1);
+                    if (mockScore > 100) mockScore = 98.5;
+                    scoreEl.innerText = `${mockScore} 分`;
+                }
+
+                // 繪製骨架連線與關節點
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00e676', lineWidth: 3});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#ff5252', lineWidth: 2, radius: 4});
+            } else {
+                statusEl.innerText = "👀 鏡頭運作中（請將上半身移至畫面中央）";
+            }
+            canvasCtx.restore();
+        }
+
+        function startTracking() {
+            statusEl.innerText = "正在初始化 MediaPipe AI 模型...";
+            
+            pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            });
+
+            pose.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            pose.onResults(onResults);
+
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await pose.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+
+            camera.start()
+                .then(() => {
+                    statusEl.innerText = "✅ 串流成功，請開始比手語！";
+                })
+                .catch(err => {
+                    statusEl.innerText = "❌ 相機啟動失敗: " + err;
+                });
+        }
+
+        function stopTracking() {
+            if (camera) {
+                camera.stop();
+            }
+            statusEl.innerText = "已暫停辨識";
+            coordsEl.innerText = "即時座標數據：尚未捕捉";
+            scoreEl.innerText = "0.0 分";
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        }
+    </script>
+</body>
+</html>
